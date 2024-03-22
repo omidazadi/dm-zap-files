@@ -8,8 +8,14 @@
 
 // All mapping methods must be called with the map_lock hold.
 
-/*
- * Initialize mapping
+/**
+ * Allocates and initializes dmzap_map structure in dmzap_target.
+ * This structure contains:
+ * 
+ * 1. dmzap_map.l2d (logical to physical sector mapping)
+ * 2. dmzap_map.d2l (physical to logical sector mapping)
+ * 3. dmzap_map.invalid_device_block (indicates whether an entry
+ *    in dmzap_map.l2d is valid or not)
  */
 int dmzap_map_init(struct dmzap_target *dmzap)
 {

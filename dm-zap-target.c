@@ -78,7 +78,10 @@ sector_t dmzap_get_seq_wp(struct dmzap_target *dmzap)
 	return dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone->wp;
 }
 
-//TODO is this nessesary?
+/**
+ * Makes a bio layer request to populate blk_zone in a block_device,
+ * such as write pointer, start, length, and etc.
+*/
 static int dmzap_report_zones(struct dm_target *ti,
 		struct dm_report_zones_args *args, unsigned int nr_zones)
 {
@@ -93,8 +96,14 @@ static int dmzap_report_zones(struct dm_target *ti,
 	return 0;
 }
 
-/*
- * Initialize a zone descriptor. Copy from dmzoned. //TODO integrate dmzap_zones_init?
+/**
+ * Callback function for bio layer report zone request used by 
+ * dmzap_zones_init. The bio layer report zone request appears
+ * to populate the fields of each blk_zone in block_device, 
+ * and call this callback for each zone. This function only
+ * works as a assertion to make sure all zones are aligned.
+ * 
+ * Note: bio layer request will be mapped to dmzap_report_zones.
  */
 static int dmzap_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 {
@@ -109,6 +118,23 @@ static int dmzap_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	return 0;
 }
 
+/**
+ * Populates zone information on both backing storage and
+ * dmzap-related fields. Steps:
+ * 
+ * 1. Allocates memory for blk_zone (structure containing
+ *    zone information for each zone) and dmzap_zone (structure
+ *    containing zone information for internal dmzap algorithm).
+ * 2. Initializes dmzap_zone structues with default values,
+ *    and blk_zone with bio layer report_zone request.
+ * 
+ * Note: Although the call on bio layer report_zone appears
+ * to initialize the backing storage zone descriptors itself, 
+ * this initialization is done again in this function as well. 
+ * Might that be a mistake?
+ * 
+ * Note: bio layer request will be mapped to dmzap_report_zones.
+ */
 int dmzap_zones_init(struct dmzap_target *dmzap)
 {
 	struct dmz_dev *dev = dmzap->dev;
@@ -216,6 +242,10 @@ err_free_internal_zones:
 	return -ENOMEM;
 }
 
+/**
+ * Frees zone descriptor information used by dmzap_target (for 
+ * both internal_zones and dmzap_zones lists inside dmzap_target).
+*/
 void dmzap_zones_free(struct dmzap_target *dmzap)
 {
 	kvfree(dmzap->meta_zones);
@@ -225,8 +255,15 @@ void dmzap_zones_free(struct dmzap_target *dmzap)
 	kvfree(dmzap->internal_zones);
 }
 
-/*
- * Initialize the devices geometry
+/**
+ * Populates geometry fields of dmzap_target, including:
+ *
+ * 1. nr_internal_zones
+ * 2. nr_op_zones
+ * 3. nr_meta_zones
+ * 4. nr_user_exposed_zones
+ * 5. capacity
+ * 6. dev_capacity
  */
 int dmzap_geometry_init(struct dm_target *ti)
 {
@@ -450,7 +487,7 @@ out:
 	return ret;
 }
 
-/*
+/**
  * Check if the backing device is being removed. If it's on the way out,
  * start failing I/O. Reclaim and metadata components also call this
  * function to cleanly abort operation in the event of such failure.
@@ -471,7 +508,7 @@ bool dmzap_bdev_is_dying(struct dmz_dev *dmz_dev)
 	return dmz_dev->flags & DMZ_BDEV_DYING;
 }
 
-/*
+/**
  * Check the backing device availability. This detects such events as
  * backing device going offline due to errors, media removals, etc.
  * This check is less efficient than dmzap_bdev_is_dying() and should
@@ -558,9 +595,16 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 	return DM_MAPIO_SUBMITTED;
 }
 
-/*
- * Get zoned device information.
- * TODO: make common ?
+/**
+ * Fetches the information of the dm_dev backing device
+ * beneath itself, and uses that information to initialize
+ * dmz_dev (dmzap uses dmzoned under the hood). Steps:
+ * 
+ * 1. Get dm_dev information of the backing storage.
+ * 2. Allocate and initialize dmz_dev from dm_dev 
+ *    (dmz_dev.bdev, dmz_dev.capacity dmz_dev.zone_nr_sectors
+ *    dmz_dev.nr_zones)
+ * 3. Hook the initialized dmz_dev into dmzap_target.
  */
 static int dmzap_get_zoned_device(struct dm_target *ti, char *path)
 {
@@ -633,8 +677,18 @@ static void dmzap_put_zoned_device(struct dm_target *ti)
 	dmzap->dev = NULL;
 }
 
-/*
- * Setup target.
+/**
+ * Constructor for dmzap_target. Does the following steps:
+ *
+ * 1. Parses and validates the input arguments of dmzap.
+ * 2. Gets the data of the device beneath itself (dm_dev) and
+ *    creates a dmz_dev accordingly (dmzap uses dmzoned under
+ *    the hood).
+ * 3. Allocates and initializes zone descriptores (both 
+ *    dmzap_target.internal_zones and dmzap_target.dmzap_zones).
+ * 4. Initializes mapping information (dmzap_target.map).
+ * 5. Initializes zone reclamation information (dmzap_target.reclaim).
+ * 6. (still working on it)
  */
 static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
