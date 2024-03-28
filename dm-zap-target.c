@@ -32,16 +32,19 @@ static ssize_t reset_zap_stats(struct kobject *kobj, struct kobj_attribute *attr
 static struct kobj_attribute zap_reset_attribute =__ATTR(reset_stats, 0220, NULL,
                                                    reset_zap_stats);
 
-/*
- * Initialize the bio context
- */
+/* Initialize the bio context. */
 static inline void dmzap_init_bioctx(struct dmzap_target *dmzap,
 				     struct bio *bio)
 {
+    /* Extracts the pointer to private per bio data. */
 	struct dmzap_bioctx *bioctx = dm_per_bio_data(bio, sizeof(struct dmzap_bioctx));
+    /* Sets target. */
 	bioctx->target = dmzap;
+    /* Sets user sector to be processed. */
 	bioctx->user_sec = bio->bi_iter.bi_sector;
+    /* Sets bio. */
 	bioctx->bio = bio;
+    /* Atomically sets the reference count of bioctx to 1. */
 	refcount_set(&bioctx->ref, 1);
 }
 
@@ -50,6 +53,7 @@ static inline void dmzap_init_bioctx(struct dmzap_target *dmzap,
  */
 inline void dmzap_bio_endio(struct bio *bio, blk_status_t status)
 {
+    /* Extracts the pointer to private per bio data. */
 	struct dmzap_bioctx *bioctx = dm_per_bio_data(bio, sizeof(struct dmzap_bioctx));
 
 	if (status != BLK_STS_OK && bio->bi_status == BLK_STS_OK)
@@ -70,18 +74,13 @@ inline void dmzap_bio_endio(struct bio *bio, blk_status_t status)
 	}
 }
 
-/*
- * Get the sequential write pointer (sector)
- */
+/* Gets the sequential write pointer (sector to be written). */
 sector_t dmzap_get_seq_wp(struct dmzap_target *dmzap)
 {
 	return dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone->wp;
 }
 
-/**
- * Makes a bio layer request to populate blk_zone in a block_device,
- * such as write pointer, start, length, and etc.
-*/
+/* report_zones handle for dmzap_type. */
 static int dmzap_report_zones(struct dm_target *ti,
 		struct dm_report_zones_args *args, unsigned int nr_zones)
 {
@@ -96,20 +95,13 @@ static int dmzap_report_zones(struct dm_target *ti,
 	return 0;
 }
 
-/**
- * Callback function for bio layer report zone request used by 
- * dmzap_zones_init. The bio layer report zone request appears
- * to populate the fields of each blk_zone in block_device, 
- * and call this callback for each zone. This function only
- * works as a assertion to make sure all zones are aligned.
- * 
- * Note: bio layer request will be mapped to dmzap_report_zones.
- */
+/* Callback function for BLKREPORTZONE ioctl. */
 static int dmzap_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 {
 	struct dmzap_target *dmzap = data;
 	struct dmz_dev *dev = dmzap->dev;
 
+    /* If the reported length is not equal to the derived length in initialization, fail. */
 	if (blkz->len != dev->zone_nr_sectors) {
 		if (blkz->start + blkz->len == dev->capacity)
 			return 0;
@@ -118,23 +110,7 @@ static int dmzap_init_zone(struct blk_zone *blkz, unsigned int idx, void *data)
 	return 0;
 }
 
-/**
- * Populates zone information on both backing storage and
- * dmzap-related fields. Steps:
- * 
- * 1. Allocates memory for blk_zone (structure containing
- *    zone information for each zone) and dmzap_zone (structure
- *    containing zone information for internal dmzap algorithm).
- * 2. Initializes dmzap_zone structues with default values,
- *    and blk_zone with bio layer report_zone request.
- * 
- * Note: Although the call on bio layer report_zone appears
- * to initialize the backing storage zone descriptors itself, 
- * this initialization is done again in this function as well. 
- * Might that be a mistake?
- * 
- * Note: bio layer request will be mapped to dmzap_report_zones.
- */
+/* Initializes dmzap zone descriptors and BLKREPORTZONE ioctl zone descriptors. */
 int dmzap_zones_init(struct dmzap_target *dmzap)
 {
 	struct dmz_dev *dev = dmzap->dev;
@@ -144,67 +120,94 @@ int dmzap_zones_init(struct dmzap_target *dmzap)
 
 	atomic_set(&dmzap->header_seq_nr, 0);
 
+    /* Allocates memory for BLKREPORTZONE ioctl zone descriptors. */
 	dmzap->internal_zones = kvmalloc_array(dmzap->nr_internal_zones,
 			sizeof(struct blk_zone), GFP_KERNEL | __GFP_ZERO);
 	if (!dmzap->internal_zones)
 		return -ENOMEM;
 
+    /* Allocates memory for dmzap zone descriptors. */
 	dmzap->dmzap_zones = kvmalloc_array(dmzap->nr_internal_zones,
 			sizeof(struct dmzap_zone), GFP_KERNEL | __GFP_ZERO);
 	if (!dmzap->dmzap_zones)
 		goto err_free_internal_zones;
 
+    /* Allocates memory for pointers of user-exposed zones. */
 	dmzap->user_zones = kvmalloc_array(dmzap->nr_user_exposed_zones,
 			sizeof(struct dmzap_zone *), GFP_KERNEL | __GFP_ZERO);
 	if (!dmzap->user_zones)
 		goto err_free_dmzap_zones;
 
+    /* Allocates memory for pointers of overprovisioning zones. */
 	dmzap->op_zones = kvmalloc_array(dmzap->nr_op_zones,
 			sizeof(struct dmzap_zone *), GFP_KERNEL | __GFP_ZERO);
 	if (!dmzap->op_zones)
 		goto err_free_user_zones;
 
+    /* Allocates memory for pointers of metadata zones. */
 	dmzap->meta_zones = kvmalloc_array(dmzap->nr_meta_zones,
 				sizeof(struct dmzap_zone *), GFP_KERNEL | __GFP_ZERO);
 	if (!dmzap->meta_zones)
 		goto err_free_op_zones;
 
-	/* Set up zones */
 	sector = 0;
 	for (i = 0; i < dmzap->nr_internal_zones ; i++) {
+        /* Is going to manipulate ith BLKREPORTZONE ioctl zone descriptor. */
 		struct blk_zone *zone = &dmzap->internal_zones[i];
+        /**
+         * Sets the start and write pointer of the zone descriptor to the begining sector
+         * of the zone. */
 		zone->start = zone->wp = sector;
+        /* Increases the sector counter by the number of sectors in the zone. */
 		sector += dev->zone_nr_sectors;
+        /* Sets the number of sectors in the zone. */
 		zone->len = dev->zone_nr_sectors;
+        /* Sets the type of the zone (sequential-only). */
 		zone->type = BLK_ZONE_TYPE_SEQWRITE_REQ;
+        /* Sets the condition of the zone (empty). */
 		zone->cond = BLK_ZONE_COND_EMPTY;
+        /**
+         * Sets the capacity of the zone (in zoned devices with unalinged zones, this number
+         * can be smaller than the actual zone size). */
 		zone->capacity = dev->zone_nr_sectors; //TODO ZNS capacity: the capacity of the backing zone has to be set individually ?
 
-
+        /* Sets the backing-zone of dmzap zone descriptor to the BLKREPORTZONE ioctl zone descriptor. */
 		dmzap->dmzap_zones[i].zone = zone;
+        /* Sets the type of dmzap zone descriptor. */
 		if(i < (dmzap->nr_user_exposed_zones)){
 			dmzap->dmzap_zones[i].type = DMZAP_RAND;
 		}else{
 			dmzap->dmzap_zones[i].type = DMZAP_RAND; //DMZAP_OP;
 		}
+        /* Sets the sequential number of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].seq = i;
+        /* Sets the state of dmzap zone descriptor (clean). */
 		dmzap->dmzap_zones[i].state = DMZAP_CLEAN;
+        /* Sets the number of invalid blocks of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].nr_invalid_blocks = 0;
+        /* Sets the last modification time of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].zone_age = 0;
+        /* Sets the shift time of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].shift_time = 0;
+        /* Sets the cost-benefit of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].cb = -1;
+        /* Sets the reclaim class of dmzap zone descriptor. */
 		dmzap->dmzap_zones[i].reclaim_class = -1;
+        /* Initializes an empty linked list. */
 		INIT_LIST_HEAD(&dmzap->dmzap_zones[i].link);
+        /* Initializes an empty red-black tree. */
 		RB_CLEAR_NODE(&dmzap->dmzap_zones[i].node);
+        /* Initializes the reclaim class mutex lock. */
 		mutex_init(&dmzap->dmzap_zones[i].reclaim_class_lock);
 	}
 
+    /* Sets the state of the first zone to explicitly open. */
 	if (dmzap->nr_internal_zones) {
 		dmzap->dmzap_zones[0].state = DMZAP_OPENED;
 		dmzap->dmzap_zones[0].zone->cond = BLK_ZONE_COND_EXP_OPEN;
 	}
 
-	/* Set up user and op zones */
+	/* Splits dmzap zones between user zones and overprovisioning zones. */
 	for (i = 0; i < dmzap->nr_internal_zones ; i++) {
 		if(i < (dmzap->nr_user_exposed_zones)){
 				dmzap->user_zones[i] = &dmzap->dmzap_zones[i];
@@ -213,10 +216,11 @@ int dmzap_zones_init(struct dmzap_target *dmzap)
 		}
 	}
 
-	/* Get set up internal zone descriptors */
 	nr_zones = dmzap->nr_internal_zones;
 
-	/* Zone report */
+	/**
+     * BLKREPORTZONE ioctl for the backing zoned block device (will override current backing
+     * zone descriptors). */
 	ret = blkdev_report_zones(dev->bdev, 0, nr_zones,
 		dmzap_init_zone, dmzap);
 
@@ -225,7 +229,9 @@ int dmzap_zones_init(struct dmzap_target *dmzap)
 		goto err_free_op_zones;
 	}
 
+    /* Initializes zone write pointer of dmzap. */
 	dmzap->dmzap_zone_wp = 0;
+    /* Initializes debug int of dmzap. */
 	dmzap->debug_int = 0;
 
 	return 0;
@@ -242,10 +248,7 @@ err_free_internal_zones:
 	return -ENOMEM;
 }
 
-/**
- * Frees zone descriptor information used by dmzap_target (for 
- * both internal_zones and dmzap_zones lists inside dmzap_target).
-*/
+/* Frees backing and dmzap zone descriptors. */
 void dmzap_zones_free(struct dmzap_target *dmzap)
 {
 	kvfree(dmzap->meta_zones);
@@ -255,16 +258,7 @@ void dmzap_zones_free(struct dmzap_target *dmzap)
 	kvfree(dmzap->internal_zones);
 }
 
-/**
- * Populates geometry fields of dmzap_target, including:
- *
- * 1. nr_internal_zones
- * 2. nr_op_zones
- * 3. nr_meta_zones
- * 4. nr_user_exposed_zones
- * 5. capacity
- * 6. dev_capacity
- */
+/* Populates geometry fields of dmzap_target. */
 int dmzap_geometry_init(struct dm_target *ti)
 {
 	struct dmzap_target *dmzap = ti->private;
@@ -272,18 +266,28 @@ int dmzap_geometry_init(struct dm_target *ti)
 	unsigned int dev_zones = dev->nr_zones;
 	unsigned int op;
 
+    /**
+     * Calculates the number of overprovisioning zones base on the initialized overprovisioning
+     * rate.
+     */
 	if (dev_zones > 1 )
 		op = dev_zones * dmzap->overprovisioning_rate / 100;
 	else
 		op = 0;
 
+    /* Sets the number of internal zones of dmzap_target. */
 	dmzap->nr_internal_zones = dev_zones;
+    /* Sets the number of overprovisioning zones of dmzap_target. */
 	dmzap->nr_op_zones = op;
+    /* Sets the number of metadata zones of dmzap_target. */
 	dmzap->nr_meta_zones = 0; //TODO check how much meta zones are needed.
+    /* Sets the number of user-exposed zones of dmzap_target. */
 	dmzap->nr_user_exposed_zones = dmzap->nr_internal_zones
 		- dmzap->nr_op_zones - dmzap->nr_meta_zones;
 
+    /* Sets the user-exposed capacity (number of sectors) of dmzap_target. */
 	dmzap->capacity = dmzap->nr_user_exposed_zones << ilog2(dev->zone_nr_sectors);
+    /* Sets the device capacity (number of sectors) of dmzap_target. */
 	dmzap->dev_capacity = dmzap->nr_internal_zones << ilog2(dev->zone_nr_sectors);
 
 	return 0;
@@ -540,14 +544,18 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dmzap_target *dmzap = ti->private;
 	struct dmz_dev *dev = dmzap->dev;
+    /* Sector to be read or written. The last pending sector in the last pending bio vector.*/
 	sector_t sector = bio->bi_iter.bi_sector;
+    /* Number of sectors involved in the bio. */
 	unsigned int nr_sectors = bio_sectors(bio);
 	sector_t chunk_sector;
 	int ret;
 
+    /* If block device is being removed, fail the bio. */
 	if (dmzap_bdev_is_dying(dmzap->dev))
 		return DM_MAPIO_KILL;
 
+    /* Debug message to print the details of incoming bio. */
 	if(dmzap->show_debug_msg){
 		dmz_dev_debug(dev, "BIO op %d sector %llu + %u => chunk %llu, block %llu, %u blocks",
 						bio_op(bio), (unsigned long long)sector, nr_sectors,
@@ -556,16 +564,20 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 						(unsigned int)dmz_bio_blocks(bio));
 	}
 
+    /* Sets block device of the bio, and refreshs its blkg association. */
 	bio_set_dev(bio, dev->bdev);
 
 	if (!nr_sectors && bio_op(bio) != REQ_OP_WRITE)
 		return DM_MAPIO_REMAPPED;
 
-	/* The BIO should be block aligned */
+	/**
+     * dmzoned blocks are always 4KB in size, while sectors in bio requests are 512 byte 
+     * addressable. Here it checks for miss-alignments and fails the bio if it finds so.
+     */
 	if ((nr_sectors & DMZ_BLOCK_SECTORS_MASK) || (sector & DMZ_BLOCK_SECTORS_MASK))
 		return DM_MAPIO_KILL;
 
-	/* Initialize the BIO context */
+	/* Initializes the bio context. */
 	dmzap_init_bioctx(dmzap,bio);
 
 	/* Set the BIO pending in the flush list */
@@ -577,7 +589,10 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 		return DM_MAPIO_SUBMITTED;
 	}
 
-	/* Split zone BIOs to fit entirely into a zone */
+	/** 
+     * If current bio spans multiple zones, only process the bio to the end of the zone.
+     * The rest of the bio has to be sent in next bios.
+     */
 	chunk_sector = sector & (dev->zone_nr_sectors - 1);
 	if (chunk_sector + nr_sectors > dev->zone_nr_sectors)
 		dm_accept_partial_bio(bio, dev->zone_nr_sectors - chunk_sector);
@@ -596,15 +611,8 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 }
 
 /**
- * Fetches the information of the dm_dev backing device
- * beneath itself, and uses that information to initialize
- * dmz_dev (dmzap uses dmzoned under the hood). Steps:
- * 
- * 1. Get dm_dev information of the backing storage.
- * 2. Allocate and initialize dmz_dev from dm_dev 
- *    (dmz_dev.bdev, dmz_dev.capacity dmz_dev.zone_nr_sectors
- *    dmz_dev.nr_zones)
- * 3. Hook the initialized dmz_dev into dmzap_target.
+ * Fetches the information of the dm_dev backing device and uses that information to initialize
+ * dmz_dev (dmzap uses dmzoned under the hood).
  */
 static int dmzap_get_zoned_device(struct dm_target *ti, char *path)
 {
@@ -614,7 +622,7 @@ static int dmzap_get_zoned_device(struct dm_target *ti, char *path)
 	sector_t aligned_capacity;
 	int ret;
 
-	/* Get the target device */
+	/* Gets information for dm_dev backing device and stores it in dmz->ddev. */
 	ret = dm_get_device(ti, path, dm_table_get_mode(ti->table), &dmz->ddev);
 	if (ret) {
 		ti->error = "Get target device failed";
@@ -622,24 +630,40 @@ static int dmzap_get_zoned_device(struct dm_target *ti, char *path)
 		return ret;
 	}
 
+    /* Allocates memory for the internal dmzoned device. */
 	dev = kzalloc(sizeof(struct dmz_dev), GFP_KERNEL);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
 	}
 
+    /* Sets block device of dmzoned device. */
 	dev->bdev = dmz->ddev->bdev;
+    /* Sets block device name of dmzoned device. */
 	(void)bdevname(dev->bdev, dev->name);
 
+    /* If the used block device is not zoned, return an error. */
 	if (bdev_zoned_model(dev->bdev) == BLK_ZONED_NONE) {
 		ti->error = "Not a zoned block device";
 		ret = -EINVAL;
 		goto err;
 	}
 
+    /* Gets request queue of the block device. */
 	q = bdev_get_queue(dev->bdev);
+    /* Gets the number of sectors in the block device. */
 	dev->capacity = i_size_read(dev->bdev->bd_inode) >> SECTOR_SHIFT;
+    /**
+     * Gets the number of sectors in the block device, minus the number of sectors that are
+     * outside of the last zone complete (it discounts the partial zone in the end of the 
+     * device).
+     */
 	aligned_capacity = dev->capacity & ~(blk_queue_zone_sectors(q) - 1);
+    /**
+     * If the underlying dm does not start from the first sector, or its capacity is not
+     * equal to the full capacity (or the aligned full capacity) of the block device, fail
+     * the process.
+     */
 	if (ti->begin ||
 	    ((ti->len != dev->capacity) && (ti->len != aligned_capacity))) {
 		ti->error = "Partial mapping not supported";
@@ -647,14 +671,17 @@ static int dmzap_get_zoned_device(struct dm_target *ti, char *path)
 		goto err;
 	}
 
+    /* Sets the number of sectors in each zone attribute in the block device. */
 	dev->zone_nr_sectors = blk_queue_zone_sectors(q);
 	// dev->zone_nr_sectors_shift = ilog2(dev->zone_nr_sectors); // dmz_dev no longer has this, it moved to dmz_metadata
 
 	// dev->zone_nr_blocks = dmz_sect2blk(dev->zone_nr_sectors); // this also moved to dmz_metadata
 	// dev->zone_nr_blocks_shift = ilog2(dev->zone_nr_blocks); // also moved to dmz_metadata
 
+    /* Sets the number zones attribute in the block device. */
 	dev->nr_zones = blkdev_nr_zones(dev->bdev->bd_disk);
 
+    /* Stores the block device pointer in dmzap taget. */
 	dmz->dev = dev;
 
 	return 0;
@@ -677,19 +704,7 @@ static void dmzap_put_zoned_device(struct dm_target *ti)
 	dmzap->dev = NULL;
 }
 
-/**
- * Constructor for dmzap_target. Does the following steps:
- *
- * 1. Parses and validates the input arguments of dmzap.
- * 2. Gets the data of the device beneath itself (dm_dev) and
- *    creates a dmz_dev accordingly (dmzap uses dmzoned under
- *    the hood).
- * 3. Allocates and initializes zone descriptores (both 
- *    dmzap_target.internal_zones and dmzap_target.dmzap_zones).
- * 4. Initializes mapping information (dmzap_target.map).
- * 5. Initializes zone reclamation information (dmzap_target.reclaim).
- * 6. (still working on it)
- */
+/* Constructor for dmzap_target. Allocates memory for it and initializes its fields. */
 static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dmzap_target *dmzap;
@@ -712,52 +727,62 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 */
 	BUILD_BUG_ON(DMZ_BLOCK_SIZE != 4096);
 
-	/* check arguments */
+	/* Validates the number of input arguemnts. */
 	if (argc != 8) {
 		ti->error = "invalid argument count";
 		return -EINVAL;
 	}
 
+    /* Validates the number of conventional zones for the dmzap, which has to be 0. */
 	if (sscanf(argv[1], "%u%c", &nr_conv_zones, &dummy) != 1 || nr_conv_zones > 0) {
 		ti->error = "Invalid number of conventional zones. No conventional zones allowed.";
 		return -EINVAL;
 	}
 
+    /* Validates the percentage of overprovisioning zones. */
 	if (sscanf(argv[2], "%u%c", &op_rate, &dummy) != 1
 			|| op_rate > 100 ) {
 		ti->error = "Invalid overprovisioning rate";
 		return -EINVAL;
 	}
 
+    /* Validates the class 0 cap. */
 	if (sscanf(argv[3], "%u%c", &class_0_cap, &dummy) != 1) {
 		ti->error = "Invalid class 0 cap";
 		return -EINVAL;
 	}
 
+    /* Validates the class 0 optimal. Has to be less than or equal to class 0 cap. */
 	if (sscanf(argv[4], "%u%c", &class_0_optimal, &dummy) != 1
 			|| class_0_cap < class_0_optimal ) {
 		ti->error = "Invalid class 0 optimal";
 		return -EINVAL;
 	}
 
+    /**
+     * Validates the victim selection method. Has to be within the number of available victim
+     * selection methods. 
+     */
 	if (sscanf(argv[5], "%u%c", &victim_selection_method, &dummy) != 1
 			|| victim_selection_method > DMZAP_VICTIM_POLICY_MAX ) {
 		ti->error = "Invalid victim selection method";
 		return -EINVAL;
 	}
 
+    /* Validates the reclaim limit. */
 	if (sscanf(argv[6], "%u%c", &reclaim_limit, &dummy) != 1
 			|| reclaim_limit > 100 ) {
 		ti->error = "Invalid reclaim limit";
 		return -EINVAL;
 	}
 
+    /* Validates the q limit. */
 	if (sscanf(argv[7], "%u%c", &q_cap, &dummy) != 1) {
 		ti->error = "Invalid q limit";
 		return -EINVAL;
 	}
 
-	/* allocate and initialize the target descriptor */
+	/* Allocates memory for dmzap target. */
 	dmzap = kzalloc(sizeof(struct dmzap_target), GFP_KERNEL);
 	if (!dmzap) {
 		ti->error = "unable to allocate the zoned target descriptor";
@@ -765,20 +790,27 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	ti->private = dmzap;
 
+    /* Sets overprovisioning rate of dmzap target. */
 	dmzap->overprovisioning_rate = op_rate;
+    /* Sets class 0 cap of dmzap target. */
 	dmzap->class_0_cap = class_0_cap;
+    /* Sets class 0 optimal of dmzap target. */
 	dmzap->class_0_optimal = class_0_optimal;
+    /* Sets victim selection method of dmzap target. */
 	dmzap->victim_selection_method = victim_selection_method;
+    /* Sets reclaim limit of dmzap target. */
 	dmzap->reclaim_limit = reclaim_limit;
+    /* Sets q cap of dmzap target. */
 	dmzap->q_cap = q_cap;
 
-	/* get the target zoned block device */
+	/* Initializes dm_dev backing device, and dmz_dev. */
 	ret = dmzap_get_zoned_device(ti, argv[0]);
 	if (ret) {
 		dmzap->ddev = NULL;
 		goto err;
 	}
 
+    /* Initializes the geometery fields of dmzap_target. */
 	ret = dmzap_geometry_init(ti);
 	if (ret) {
 		goto err_dev;
