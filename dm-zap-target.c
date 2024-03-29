@@ -80,7 +80,7 @@ sector_t dmzap_get_seq_wp(struct dmzap_target *dmzap)
 	return dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone->wp;
 }
 
-/* report_zones handle for dmzap_type. */
+/* report_zones handle for dmzap_type - Reports zone information for dmzap_target. */
 static int dmzap_report_zones(struct dm_target *ti,
 		struct dm_report_zones_args *args, unsigned int nr_zones)
 {
@@ -88,6 +88,7 @@ static int dmzap_report_zones(struct dm_target *ti,
     struct dmz_dev *dev = dmzap->dev;
     int ret;
 
+    /* Pipe the request to the backing block device. */
     ret = dm_report_zones(dev->bdev, 0, 0, args, nr_zones);
     if (ret != 0)
         return ret;
@@ -219,8 +220,9 @@ int dmzap_zones_init(struct dmzap_target *dmzap)
 	nr_zones = dmzap->nr_internal_zones;
 
 	/**
-     * BLKREPORTZONE ioctl for the backing zoned block device (will override current backing
-     * zone descriptors). */
+     * BLKREPORTZONE ioctl for the backing zoned block device. Its report is used to check
+     * whether device information was correctly recieved during initialization. 
+     */
 	ret = blkdev_report_zones(dev->bdev, 0, nr_zones,
 		dmzap_init_zone, dmzap);
 
@@ -248,7 +250,7 @@ err_free_internal_zones:
 	return -ENOMEM;
 }
 
-/* Frees backing and dmzap zone descriptors. */
+/* Frees backing zone and dmzap zone descriptors. */
 void dmzap_zones_free(struct dmzap_target *dmzap)
 {
 	kvfree(dmzap->meta_zones);
@@ -306,19 +308,19 @@ int dmzap_geometry_init(struct dm_target *ti)
 // 	//header->crc = cpu_to_le32(crc32_le(0, (unsigned char *)header, DMZ_BLOCK_SIZE));
 // }
 
-/*
- * Process a BIO.
- */
+/* Handles a bio inside a chunk. */
 int dmzap_handle_bio(struct dmzap_target *dmzap,
 				struct dmzap_chunk_work *cw, struct bio *bio)
 {
 	int ret;
 
+    /* If block device is dying, return error. */
 	if (dmzap->dev->flags & DMZ_BDEV_DYING) {
 		ret = -EIO;
 		goto out;
 	}
 
+    /* If bio has no sectors left, it is done. */
 	if (!bio_sectors(bio)) {
 		ret = DM_MAPIO_SUBMITTED;
 		goto out;
@@ -336,17 +338,20 @@ int dmzap_handle_bio(struct dmzap_target *dmzap,
 	}
 
 	switch (bio_op(bio)) {
+    /* In case of read, do the conventional read. */
 	case REQ_OP_READ:
 		mutex_lock(&dmzap->map.map_lock);
 		ret = dmzap_conv_read(dmzap, bio);
 		mutex_unlock(&dmzap->map.map_lock);
 		break;
+    /* In case of write, do the conventional write. */
 	case REQ_OP_WRITE:
 		mutex_lock(&dmzap->map.map_lock);
 		ret = dmzap_conv_write(dmzap, bio);
 		mutex_unlock(&dmzap->map.map_lock);
 
 		break;
+    /* In case of discard, do the discard. */
 	case REQ_OP_DISCARD:
 	case REQ_OP_WRITE_ZEROES:
 		dmz_dev_debug(dmzap->dev, "Discard operation triggered");
@@ -358,9 +363,10 @@ int dmzap_handle_bio(struct dmzap_target *dmzap,
 		ret = -EIO;
 	}
 
-	/* Upadate access time*/
+	/* Updates the last access time of the dmzap. */
 	dmzap_reclaim_bio_acc(dmzap);
 
+    /* Periodically prints dmzap statistics. */
 	if(time_is_before_jiffies(dmzap->wa_print_time + DMZAP_WA_PERIOD)){
 		trace_printk("User written sectors: %lld, GC written sectors: %lld, vsm: %u, dev_c: %lld\n",
 			dmzap->nr_user_written_sec,
@@ -382,22 +388,20 @@ static inline void dmzap_get_chunk_work(struct dmzap_chunk_work *cw)
 	refcount_inc(&cw->refcount);
 }
 
-/*
- * Decrement a chunk work reference count and
- * free it if it becomes 0.
- */
+/* Decreases the reference count of a chunk work. Destroys it if becomes zero. */
 static void dmzap_put_chunk_work(struct dmzap_chunk_work *cw)
 {
+    /* Decreases the refcount, and checks whether it is zero. */
 	if (refcount_dec_and_test(&cw->refcount)) {
+        /* Warns if the bio list is not empty yet. */
 		WARN_ON(!bio_list_empty(&cw->bio_list));
+        /* Deletes the chunk work from the chunk work radix tree. */
 		radix_tree_delete(&cw->target->chunk_rxtree, cw->chunk);
 		kfree(cw);
 	}
 }
 
-/*
- * Chunk BIO work function.
- */
+/* Chunk work function, called by chunk work queue. */
 static void dmzap_chunk_work_(struct work_struct *work)
 {
 	struct dmzap_chunk_work *cw = container_of(work, struct dmzap_chunk_work, work);
@@ -406,47 +410,51 @@ static void dmzap_chunk_work_(struct work_struct *work)
 
 	mutex_lock(&dmzap->chunk_lock);
 
-	/* Process the chunk BIOs */
+	/* Process all bios in the bio list of the chunk work. */
 	while ((bio = bio_list_pop(&cw->bio_list))) {
 		mutex_unlock(&dmzap->chunk_lock);
+        /* Handles the bio. */
 		dmzap_handle_bio(dmzap, cw, bio);
 		mutex_lock(&dmzap->chunk_lock);
+        /* Decreases the chunk work refcount. */
 		dmzap_put_chunk_work(cw);
 	}
 
-	/* Queueing the work incremented the work refcount */
+	/* Decreases the chunk work refcount, and destroys it. */
 	dmzap_put_chunk_work(cw);
 
 	mutex_unlock(&dmzap->chunk_lock);
 }
 
-/*
- * Flush work.
- */
+/* Flush work function. Flushes all finished bios passed to its bio list. */
 static void dmzap_flush_work(struct work_struct *work)
 {
 	struct dmzap_target *dmzap = container_of(work, struct dmzap_target, flush_work.work);
 	struct bio *bio;
 	int ret = 0;
 
-	/* Process queued flush requests */
+	/* Processes queued flush bios. */
 	while (1) {
 		spin_lock(&dmzap->flush_lock);
+        /* Gets a bio from its list. */
 		bio = bio_list_pop(&dmzap->flush_list);
 		spin_unlock(&dmzap->flush_lock);
 
+        /* Breaks if there is no more bio. */
 		if (!bio)
 			break;
 
+        /* Finishes the bio. */
 		dmzap_bio_endio(bio, errno_to_blk_status(ret));
 	}
 
+    /* Reschedules itself to be run after DMZAP_FLUSH_PERIOD jiffies. */
 	queue_delayed_work(dmzap->flush_wq, &dmzap->flush_work, DMZAP_FLUSH_PERIOD);
 }
 
-/*
- * Get a chunk work and start it to process a new BIO.
- * If the BIO chunk has no work yet, create one.
+/**
+ * Gets the existing chunk work for the chunk this bio is inside of, and adds the bio to
+ * its bio list to be processed. If the chunk work did not exist, create it.
  */
 static int dmzap_queue_chunk_work(struct dmzap_target *dmzap, struct bio *bio)
 {
@@ -456,23 +464,29 @@ static int dmzap_queue_chunk_work(struct dmzap_target *dmzap, struct bio *bio)
 
 	mutex_lock(&dmzap->chunk_lock);
 
-	/* Get the BIO chunk work. If one is not active yet, create one */
+	/* Looks up the chunk work for this bio in the chunk work radix tree. */
 	cw = radix_tree_lookup(&dmzap->chunk_rxtree, chunk);
+    /* If the chunk work did not exist, creates it. */
 	if (!cw) {
-
-		/* Create a new chunk work */
+		/* Allocates memory for the new chunk work. */
 		cw = kmalloc(sizeof(struct dmzap_chunk_work), GFP_NOIO);
 		if (unlikely(!cw)) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
+        /* Initializes the chunk work. Assosiates it with its function. */
 		INIT_WORK(&cw->work, dmzap_chunk_work_);
+        /* Sets refcount of the chunk work to 1. */
 		refcount_set(&cw->refcount, 1);
+        /* Sets the target the chunk work. */
 		cw->target = dmzap;
+        /* Sets the chunk number the chunk work. */
 		cw->chunk = chunk;
+        /* Initializes the bio list of the chunk work. */
 		bio_list_init(&cw->bio_list);
 
+        /* Inserts the newly created chunck work to the chunk work radix tree. */
 		ret = radix_tree_insert(&dmzap->chunk_rxtree, chunk, cw);
 		if (unlikely(ret)) {
 			kfree(cw);
@@ -480,11 +494,16 @@ static int dmzap_queue_chunk_work(struct dmzap_target *dmzap, struct bio *bio)
 		}
 	}
 
+    /* Adds current bio to the bio list of the chunk work. */
 	bio_list_add(&cw->bio_list, bio);
+    /* Increments the refcount of the chunk work. */
 	dmzap_get_chunk_work(cw);
 
+    /* Updates the last access time of the dmzap. */
 	dmzap_reclaim_bio_acc(dmzap);
+    /* If the work has not been queued before, queue it. */
 	if (queue_work(dmzap->chunk_wq, &cw->work))
+        /* Increments the refcount of the chunk work. */
 		dmzap_get_chunk_work(cw);
 out:
 	mutex_unlock(&dmzap->chunk_lock);
@@ -537,9 +556,7 @@ bool dmzap_check_bdev(struct dmz_dev *dmz_dev)
 	return !(dmz_dev->flags & DMZ_BDEV_DYING);
 }
 
-/*
- * Process a bio
- */
+/* map handle for dmzap_type - Processes a bio submitted to dmzap_target. */
 static int dmzap_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dmzap_target *dmzap = ti->private;
@@ -590,14 +607,15 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 	}
 
 	/** 
-     * If current bio spans multiple zones, only process the bio to the end of the zone.
-     * The rest of the bio has to be sent in next bios.
+     * If current bio spans multiple chunks (a chunk is user-side bundle of sectors with size
+     * equivalent to the size of a zone), only process the bio to the end of the chunk. The
+     * rest of the bio has to be sent in next bios.
      */
 	chunk_sector = sector & (dev->zone_nr_sectors - 1);
 	if (chunk_sector + nr_sectors > dev->zone_nr_sectors)
 		dm_accept_partial_bio(bio, dev->zone_nr_sectors - chunk_sector);
 
-	/* Now ready to handle this BIO */
+	/* Passes the bio to the chunk work queue to be processed. */
 	ret = dmzap_queue_chunk_work(dmzap, bio);
 	if (ret) {
 		dmz_dev_debug(dev,
@@ -704,7 +722,11 @@ static void dmzap_put_zoned_device(struct dm_target *ti)
 	dmzap->dev = NULL;
 }
 
-/* Constructor for dmzap_target. Allocates memory for it and initializes its fields. */
+/**
+ * ctr handle for dmzap_type - Constructor for dmzap_target. 
+ * 
+ * Allocates memory for it and initializes its fields.
+ */
 static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dmzap_target *dmzap;
@@ -818,6 +840,7 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dev = dmzap->dev;
 
+    /* Initializes ths zone fields of dmzap_target. */
 	ret = dmzap_zones_init(dmzap);
 	if (ret) {
 		ti->error = "failed to initialize zones";
@@ -826,6 +849,7 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	spin_lock_init(&dmzap->meta_blk_lock);
 
+    /* Initializes the mapping fields of dmzap_target. */
 	ret = dmzap_map_init(dmzap);
 	if (ret) {
 		ti->error = "failed to initialize mapping table";
@@ -843,22 +867,24 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	ti->len = dmzap->capacity;
 
+    /* Initializes the bioset of dmzap_target. */
 	ret = bioset_init(&dmzap->bio_set, DMZAP_MIN_BIOS, 0, 0);
 	if (ret) {
 		ti->error = "create bio set failed";
 		goto err_map;
 	}
 
-	/* Initialize reclaim */
+	/* Initializes the reclaim of dmzap_target. */
 	ret = dmzap_ctr_reclaim(dmzap);
 	if (ret) {
 		ti->error = "Zone reclaim initialization failed";
 		goto err_map;
 	}
 
-	/* Chunk BIO work */
 	mutex_init(&dmzap->chunk_lock);
+    /* Initializes the chunk work radix tree. */
 	INIT_RADIX_TREE(&dmzap->chunk_rxtree, GFP_NOIO);
+    /* Initializes the chunk work queue. */
 	dmzap->chunk_wq = alloc_workqueue("dmzap_cwq_%s", WQ_MEM_RECLAIM | WQ_UNBOUND,
 					0, dev->name);
 	if (!dmzap->chunk_wq) {
@@ -867,10 +893,12 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto err_bio;
 	}
 
-	/* Flush work */
 	spin_lock_init(&dmzap->flush_lock);
+    /* Initializes the flush bio list */
 	bio_list_init(&dmzap->flush_list);
+    /* Initializes the flush work. */
 	INIT_DELAYED_WORK(&dmzap->flush_work, dmzap_flush_work);
+    /* Initializes the flush work queue. */
 	dmzap->flush_wq = alloc_ordered_workqueue("dmzap_fwq_%s", WQ_MEM_RECLAIM,
 						dev->name);
 	if (!dmzap->flush_wq) {
@@ -878,6 +906,7 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ret = -ENOMEM;
 		goto err_cwq;
 	}
+    /* Schedules the flush work on flush work queue. */
 	mod_delayed_work(dmzap->flush_wq, &dmzap->flush_work, DMZAP_FLUSH_PERIOD);
 
 	/* Just for debugging purpose TODO REMOVE */
