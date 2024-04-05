@@ -32,7 +32,7 @@ static ssize_t reset_zap_stats(struct kobject *kobj, struct kobj_attribute *attr
 static struct kobj_attribute zap_reset_attribute =__ATTR(reset_stats, 0220, NULL,
                                                    reset_zap_stats);
 
-/* Initialize the bio context. */
+/* Initializes the bio context. */
 static inline void dmzap_init_bioctx(struct dmzap_target *dmzap,
 				     struct bio *bio)
 {
@@ -49,7 +49,7 @@ static inline void dmzap_init_bioctx(struct dmzap_target *dmzap,
 }
 
 /*
- * Target BIO completion.
+ * Target bio completion.
  */
 inline void dmzap_bio_endio(struct bio *bio, blk_status_t status)
 {
@@ -597,7 +597,7 @@ static int dmzap_map(struct dm_target *ti, struct bio *bio)
 	/* Initializes the bio context. */
 	dmzap_init_bioctx(dmzap,bio);
 
-	/* Set the BIO pending in the flush list */
+	/* If this bio_vec for write operation is completed, flush the results. */
 	if (!nr_sectors && bio_op(bio) == REQ_OP_WRITE) {
 		spin_lock(&dmzap->flush_lock);
 		bio_list_add(&dmzap->flush_list, bio);
@@ -724,8 +724,6 @@ static void dmzap_put_zoned_device(struct dm_target *ti)
 
 /**
  * ctr handle for dmzap_type - Constructor for dmzap_target. 
- * 
- * Allocates memory for it and initializes its fields.
  */
 static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
@@ -911,8 +909,11 @@ static int dmzap_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	/* Just for debugging purpose TODO REMOVE */
 	dmzap->show_debug_msg = 0;
+    /* Initializes the number of user-written sectors. */
 	dmzap->nr_user_written_sec = 0;
+    /* Initializes the number of gc-written sectors. */
 	dmzap->nr_gc_written_sec = 0;
+    /* Initializes the last time statistics were printed. */
 	dmzap->wa_print_time = jiffies;
 	dmzap->gc_time = 0;
 	dmzap->gc_count = 0;
@@ -993,8 +994,8 @@ err:
 	return ret;
 }
 
-/*
- * Cleanup target.
+/**
+ * dtr handle for dmzap_type - Destructor for dmzap_target. 
  */
 static void dmzap_dtr(struct dm_target *ti)
 {
@@ -1013,8 +1014,9 @@ static void dmzap_dtr(struct dm_target *ti)
 	kfree(dmzap);
 }
 
-/*
- * Setup target request queue limits.
+
+/**
+ * io_hints handle for dmzap_type - Outlines the limits of the target request queue.
  */
 static void dmzap_io_hints(struct dm_target *ti, struct queue_limits *limits)
 {
@@ -1041,45 +1043,55 @@ static void dmzap_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	limits->zoned = BLK_ZONED_HM;
 }
 
-/*
- * Pass on ioctl to the backend device.
+/**
+ * prepare_ioctl handle for dmzap_type - Handles an ioctl call.
  */
 static int dmzap_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
 {
 	struct dmzap_target *dmzap = ti->private;
 
+    /* Error if the backing device was dying. */
 	if (!dmzap_check_bdev(dmzap->dev))
 		return -EIO;
 
-	/* TODO: do we really want to just pipe things through?*/
+	/* TODO: do we really want to just pipe things through? */
 	*bdev = dmzap->dev->bdev;
 
 	return 0;
 }
 
-/*
- * Stop background work on suspend.
+/**
+ * postsuspend handle for dmzap_type - Stops background works.
  */
 static void dmzap_suspend(struct dm_target *ti)
 {
 	struct dmzap_target *dmzap = ti->private;
 
+    /* Waits for all chunk works to finish. */
 	flush_workqueue(dmzap->chunk_wq);
+    /* Suspends reclaim. */
 	dmzap_suspend_reclaim(dmzap);
+    /* Drops the scheduled flush work. */
 	cancel_delayed_work_sync(&dmzap->flush_work);
 }
 
-/*
- * Resume background work
+/**
+ * resume handle for dmzap_type -  Resume background works.
  */
 static void dmzap_resume(struct dm_target *ti)
 {
 	struct dmzap_target *dmzap = ti->private;
 
+    /* Resumes flush work.*/
 	queue_delayed_work(dmzap->flush_wq, &dmzap->flush_work, DMZAP_FLUSH_PERIOD);
+    /* Resumes reclaim.*/
 	dmzap_resume_reclaim(dmzap);
 }
 
+/**
+ * iterate_devices handle for dmzap_type -  Resume background works.
+ */
+/* Passes device mapper information to the callback. */
 static int dmzap_iterate_devices(struct dm_target *ti,
 				 iterate_devices_callout_fn fn, void *data)
 {

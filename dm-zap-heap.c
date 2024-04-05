@@ -6,32 +6,41 @@ __always_inline unsigned long long updated_cwa(struct dmzap_zone *zone, u64 jiff
 	return zone->cps;
 }
 
+/* Extends the size of the heap to double of its current size. */
 int dmzap_heap_increase_size(void *arg){
 	//printk(KERN_WARNING"new size: %u\n", heap->max_size*2+1);
 
 	struct dmzap_fegc_heap *heap = (struct dmzap_fegc_heap *)arg;
 	//preempt_disable();
+    /* Allocates new memory for the heap. */
     void* new_data = vzalloc(sizeof(struct dmzap_fegc_heap*)* (heap->max_size*2+1));
     //preempt_enable();
+    /* Copies old data to the first half of the new memory. */
     memcpy(new_data, heap->data, (heap->size+1)*sizeof(struct dmzap_fegc_heap*));
+    /* Frees old memory. */
     vfree(heap->data);
     heap->data = new_data;
     heap->max_size *= 2;
     return 0;
 }
 
+/* Shrinks the size of the heap to half of its current size. */
 int dmzap_heap_decrease_size(void* arg){
 	struct dmzap_fegc_heap *heap = (struct dmzap_fegc_heap *)arg;
 	//preempt_disable();
+    /* Allocates new memory for the heap. */
     void* new_data = vzalloc(sizeof(struct dmzap_fegc_heap*)* (heap->max_size/2+1));
     //preempt_enable();
+    /* Copies old data to the new memory. */
     memcpy(new_data, heap->data, (heap->size+1)*sizeof(struct dmzap_fegc_heap*));
+    /* Frees old memory. */
     vfree(heap->data);
     heap->data = new_data;
     heap->max_size /= 2;
     return 0;
 }
 
+/* Initializes heap. */
 void dmzap_fegc_heap_init(struct dmzap_fegc_heap *heap){
 	heap->max_size = DEF_HEAP_SIZE;
 	heap->size = 0;
@@ -40,6 +49,7 @@ void dmzap_fegc_heap_init(struct dmzap_fegc_heap *heap){
 	mutex_init(&heap->lock);
 }
 
+/* Destroyes heap. */
 void dmzap_heap_destroy(struct dmzap_fegc_heap *heap){
 	vfree(heap->data);
 }

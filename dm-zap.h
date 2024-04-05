@@ -144,15 +144,13 @@ struct dmzap_map {
 	struct mutex map_lock;
 };
 
-/*
- * Chunk work descriptor.
-*/
+/* Chunk work descriptor */
 struct dmzap_chunk_work {
-	struct work_struct	work;
-	refcount_t		refcount;
-	struct dmzap_target	*target;
-	unsigned int		chunk;
-	struct bio_list		bio_list;
+	struct work_struct	work; /* The actual async work */
+	refcount_t		refcount; /* Reference count */
+	struct dmzap_target	*target; /* dmzap target */
+	unsigned int		chunk; /* Chunk of the user space this work is related to */
+	struct bio_list		bio_list; /* List of bios to be processed */
 };
 
 enum {
@@ -172,28 +170,26 @@ enum {
 
 };
 
-/*
- * Target descriptor.
- */
+/* dmzap target descriptor */
 struct dmzap_target {
-	struct dm_dev		*ddev;
+	struct dm_dev		*ddev; /* backing dm device */
 
 	/* dmzap block device information */
-	struct dmz_dev		*dev;
+	struct dmz_dev		*dev; /* backing dmzoned device */
 
 	/* For cloned BIOs to conventional zones */
-	struct bio_set		bio_set;
+	struct bio_set		bio_set; /* bioset of the target (used to rescue from some deadlocks) */
 
-	unsigned int overprovisioning_rate;
-	unsigned int class_0_cap;
-	unsigned int class_0_optimal;
+	unsigned int overprovisioning_rate; /* op/total rate of blocks */
+	unsigned int class_0_cap; /* class 0 cap */
+	unsigned int class_0_optimal; /* class 0 optimal */
 	unsigned int victim_selection_method; /* 0 = greedy, 1 = cb, 2 = fast cb */
 
 	/* Capacities */
-	unsigned int		nr_internal_zones;
-	unsigned int 		nr_op_zones;
-	unsigned int		nr_meta_zones;
-	unsigned int		nr_user_exposed_zones; /* internal - op - meta*/
+	unsigned int		nr_internal_zones; /* Total number of internal zones for the target */
+	unsigned int 		nr_op_zones; /* Numer of overprovisioning zones */
+	unsigned int		nr_meta_zones; /* Numer of metadata zones */
+	unsigned int		nr_user_exposed_zones; /* Number of user data zones (internal - op - meta) */
 
 	/* Sequential zones */
 	struct dmzap_zone *dmzap_zones;
@@ -242,15 +238,15 @@ struct dmzap_target {
 
 
 	/* For chunk work */
-	struct radix_tree_root	chunk_rxtree;
-	struct workqueue_struct *chunk_wq;
-	struct mutex		chunk_lock;
+	struct radix_tree_root	chunk_rxtree; /* Chunk work radix tree */
+	struct workqueue_struct *chunk_wq; /* Chunk workqueue */
+	struct mutex		chunk_lock; /* Lock for all chunk works */
 
 	/* For flush */
-	spinlock_t		flush_lock;
-	struct bio_list		flush_list;
-	struct delayed_work	flush_work;
-	struct workqueue_struct *flush_wq;
+	spinlock_t		flush_lock; /* Lock for flush related stuff */
+	struct bio_list		flush_list; /* List of bios to be flushed */
+	struct delayed_work	flush_work; /* Scheduled flush work */
+	struct workqueue_struct *flush_wq; /* Flush workqueue */
 
 	//TODO do we need those numbers?
 	unsigned int nr_clean_zones;
@@ -260,8 +256,8 @@ struct dmzap_target {
 	unsigned long		wa_print_time;
 
 	unsigned int show_debug_msg; //TODO remove
-	u64 nr_user_written_sec;
-	u64 nr_gc_written_sec;
+	u64 nr_user_written_sec; /* Number of user-written sectors */
+	u64 nr_gc_written_sec; /* Number of gc-written sectors */
 	int debug_int;
 
 	u64 gc_time;
@@ -279,14 +275,12 @@ struct dmzap_target {
 
 };
 
-/*
- * Zone BIO context.
- */
+/* Per bio context data */
 struct dmzap_bioctx {
-	struct dmzap_target	*target;
-	struct bio		*bio;
-	refcount_t		ref;
-	sector_t		user_sec;
+	struct dmzap_target	*target; /* dmzap target */
+	struct bio		*bio; /* Actual bio */
+	refcount_t		ref; /* reference count */
+	sector_t		user_sec; /* User space sector of the bio */
 };
 
 /* dm-zap-target.c */

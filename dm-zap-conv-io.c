@@ -88,6 +88,7 @@ static inline void dmzap_bio_end_wr(struct bio *bio,
 	struct dmzap_bioctx *bioctx = dm_per_bio_data(bio, sizeof(struct dmzap_bioctx));
 	struct dmzap_target *dmzap = bioctx->target;
 
+    /* Alarms if write bio fails. */
 	if (bio->bi_status != BLK_STS_OK) {
 		/* TODO: stop writing to zone
 		 *  (or writing altogether) on
@@ -97,22 +98,24 @@ static inline void dmzap_bio_end_wr(struct bio *bio,
 	} else {
 		int ret;
 
+        /* Updates the mapping table. */
 		ret = dmzap_map_update(dmzap,
 			dmz_sect2blk(bioctx->user_sec),
 			dmz_sect2blk(dmzap_get_seq_wp(dmzap)),
 			dmz_bio_blocks(bio));
 
+        /* Updates zone write pointer (zone to be written).*/
 		dmzap_update_seq_wp(dmzap, bio_sectors(bio));
 
 		if(ret)
 			dmz_dev_err(dmzap->dev, "endio mapping failed!");
 	}
 
+    /* Frees the write outstanding lock. */
 	clear_bit_unlock(DMZAP_WR_OUTSTANDING, &dmzap->write_bitmap);
 }
 
-
-
+/* Increases the reference count of the bio. */
 static inline void dmzap_get_bio(struct bio *bio)
 {
 	struct dmzap_bioctx *bioctx;
@@ -121,6 +124,7 @@ static inline void dmzap_get_bio(struct bio *bio)
 	refcount_inc(&bioctx->ref);
 }
 
+/* Decreases the reference count of the bio, and deletes it if it reachs zero. */
 static inline void dmzap_put_bio(struct bio *bio)
 {
 	struct dmzap_bioctx *bioctx;
@@ -132,8 +136,8 @@ static inline void dmzap_put_bio(struct bio *bio)
 }
 
 /*
- * Completion callback for an internally cloned target BIO. This terminates the
- * target BIO when there are no more references to its context.
+ * Completion callback for an internally cloned target bio. This terminates the
+ * target bio when there are no more references to its context.
  */
 static void dmzap_clone_endio(struct bio *clone)
 {
@@ -145,19 +149,22 @@ static void dmzap_clone_endio(struct bio *clone)
 	// 	printk("status in dmzap_clone_endio %d", status);
 	// }
 
+    /* If the clone failed, fail the original as well. */
 	if (status != BLK_STS_OK && bio->bi_status == BLK_STS_OK)
 		bio->bi_status = status;
 
+    /* If the bio was write, update the mapping table and zone write pointers. */
 	if (bio_data_dir(bio) == WRITE)
 		dmzap_bio_end_wr(bio, status);
 
+    /* Decreases the reference counts and deletes the bio and the clone if necessary. */
 	bio_put(clone);
 	dmzap_bio_endio(bio, status);
 }
 
-/*
- * Issue a clone of a target BIO. The clone may only partially process the
- * original target BIO.
+/**
+ * Issues a clone of the target bio and submits it. The clone may only partially process the
+ * original target bio.
  */
 static int dmzap_submit_bio(struct dmzap_target *dmzap,
 				sector_t sector, struct bio *bio)
@@ -165,19 +172,26 @@ static int dmzap_submit_bio(struct dmzap_target *dmzap,
 	struct dmzap_bioctx *bioctx = dm_per_bio_data(bio, sizeof(struct dmzap_bioctx));
 	struct bio *clone;
 
+    /* Clones the bio, but reuses the bi_vecs of the original. */
 	clone = bio_clone_fast(bio, GFP_NOIO, &dmzap->bio_set);
 	if (!clone)
 		return -ENOMEM;
 
+    /* Sets block device of the clone. */
 	bio_set_dev(clone, dmzap->dev->bdev);
 
+    /* Sets bio sector of the clone. */
 	clone->bi_iter.bi_sector = sector;
+    /* Sets bio size of the clone. */
 	clone->bi_iter.bi_size = bio_sectors(bio) << SECTOR_SHIFT;
+    /* Sets end io callback of the clone. */
 	clone->bi_end_io = dmzap_clone_endio;
+    /* Sets private bio context of the clone. */
 	clone->bi_private = bioctx;
 
 	//bio_advance(bio, clone->bi_iter.bi_size);
 
+    /* Increments reference count of the bio context, and submits the clone. */
 	refcount_inc(&bioctx->ref);
 	submit_bio_noacct(clone);
 
@@ -186,6 +200,7 @@ static int dmzap_submit_bio(struct dmzap_target *dmzap,
 		//maybe this section is not needed
 		break;
 	case REQ_OP_WRITE:
+        /* Updates the last access time and condition of the zone which was accessed. */
 		dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone_age = jiffies;
 		dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone->cond = BLK_ZONE_COND_IMP_OPEN;
 		break;
@@ -194,6 +209,7 @@ static int dmzap_submit_bio(struct dmzap_target *dmzap,
 	return 0;
 }
 
+/* Handles conventional read operation. */
 int dmzap_conv_read(struct dmzap_target *dmzap, struct bio *bio)
 {
 	sector_t user = bio->bi_iter.bi_sector;
@@ -203,19 +219,24 @@ int dmzap_conv_read(struct dmzap_target *dmzap, struct bio *bio)
 	sector_t left = dmz_bio_blocks(bio);
 	int ret;
 
+    /* While there is unread block remaining. */
 	while (left) {
+        /* Gets a segment of contiguously mapped logical blocks. */
 		mapped = dmzap_map_lookup(dmzap,
 				dmz_sect2blk(user),
 				&backing, left);
 
+        /* Converts number of blocks to number of sectors. */
 		size = mapped << DMZ_BLOCK_SHIFT;
 
+        /* If the backing block in unmapped or invalid, fills the whole bio with zero.*/
 		if (backing == DMZAP_UNMAPPED || backing == DMZAP_INVALID) {
 
 			swap(bio->bi_iter.bi_size, size);
 			zero_fill_bio(bio);
 			swap(bio->bi_iter.bi_size, size);
 
+        /* Otherwise, submits the read bio for that contiguous size. */
 		} else {
 			//dmzap_get_bio(bio);
 
@@ -224,6 +245,7 @@ int dmzap_conv_read(struct dmzap_target *dmzap, struct bio *bio)
 				return DM_MAPIO_KILL;
 		}
 
+        /* Advances the bio to eliminate the submitted portion. */
 		bio_advance(bio, size);
 		left -= mapped;
 	}
@@ -233,18 +255,21 @@ int dmzap_conv_read(struct dmzap_target *dmzap, struct bio *bio)
 	return DM_MAPIO_SUBMITTED;
 }
 
+/* Handles conventional write operation. */
 int dmzap_conv_write(struct dmzap_target *dmzap, struct bio *bio)
 {
 	int ret;
 
-	/* We can only have one outstanding write at a time */
+	/* Only one outstanding write at any time is permitted. Locks the write outstanding. */
 	while(test_and_set_bit_lock(DMZAP_WR_OUTSTANDING,
 				&dmzap->write_bitmap))
 		io_schedule();
 
+    /* If the backing zone to be written is readonly, fails. */
 	if (dmzap->dmzap_zones[dmzap->dmzap_zone_wp].zone->cond == BLK_ZONE_COND_READONLY)
 		return -EROFS;
 
+    /* Maps the bio to the sequential write pointer. */
 	ret = dmzap_submit_bio(dmzap, dmzap_get_seq_wp(dmzap), bio);
 	if (ret) {
 		/* Out of memory, try again later */
@@ -255,7 +280,7 @@ int dmzap_conv_write(struct dmzap_target *dmzap, struct bio *bio)
 	return DM_MAPIO_SUBMITTED;
 }
 
-
+/* Handles discard operation. */
 int dmzap_handle_discard(struct dmzap_target *dmzap, struct bio *bio)
 {
 	int ret = DM_MAPIO_SUBMITTED;
