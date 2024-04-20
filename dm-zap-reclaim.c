@@ -1,8 +1,6 @@
 #include "dm-zap.h"
 
-/*
- * dm_kcopyd_copy end notification.
- */
+/* Trigger function for kcopyd operation. */
 static void dmzap_reclaim_kcopy_end(int read_err, unsigned long write_err,
 				  void *context)
 {
@@ -18,14 +16,13 @@ static void dmzap_reclaim_kcopy_end(int read_err, unsigned long write_err,
 	wake_up_bit(&reclaim->flags, DMZAP_RECLAIM_KCOPY);
 }
 
-/*
- *  Convert backing block number to corresponding zone id
- */
+/* Converts block number to zone number. */
 unsigned int dmzap_block2zone_id(struct dmzap_target *dmzap, sector_t block)
 {
   return ((unsigned int) (block / dmz_sect2blk(dmzap->dev->zone_nr_sectors)));
 }
 
+/* Calculates percentage of free zones and percentage of use free zones. */
 void dmzap_calc_p_free_zone(struct dmzap_target *dmzap)
 {
 	struct dmzap_reclaim *reclaim = dmzap->reclaim;
@@ -166,9 +163,7 @@ static void dmzap_assign_zone_to_class_0(struct dmzap_target *dmzap,
   	dmz_dev_debug(dmzap->dev, "Zone %d assigned to class 0.\n", zone->seq);
 }
 
-/*
- * Remove zone from the class 0 list
- */
+/* Removes victim from class 0 list. */
 static void dmzap_unassign_zone_from_class_0(struct dmzap_target *dmzap,
   struct dmzap_zone *zone)
 {
@@ -352,9 +347,7 @@ int dmzap_invalidate_blocks(struct dmzap_target *dmzap,
   return 0;
 }
 
-/*
- * Validate all the blocks in the range [block..block+nr_blocks-1].
- */
+/* Marks all blocks in a range as valid. */
 int dmzap_validate_blocks(struct dmzap_target *dmzap,
   sector_t backing_block,
   unsigned int nr_blocks)
@@ -372,13 +365,16 @@ int dmzap_validate_blocks(struct dmzap_target *dmzap,
 
   WARN_ON(backing_block + nr_blocks > dmz_sect2blk(dmzap->dev->zone_nr_sectors) * dmzap->dev->nr_zones);
 
+    /* Iterates all blocks in the range. */
   while (nr_blocks) {
       current_block = backing_block + (nr_blocks-1);
+      /* If the block is marked as invalid, makes it valid. */
       if (dmzap->map.invalid_device_block[current_block] == 1) {
           dmzap->map.invalid_device_block[current_block] = 0;
           current_zone_index = dmzap_block2zone_id(dmzap,current_block);
           dmzap->dmzap_zones[current_zone_index].nr_invalid_blocks--;
           current_zone = &dmzap->dmzap_zones[current_zone_index];
+          /* If algorithms are constant greedy or constant const benefit, move the zone to the upper list. */
           if (current_zone->zone->cond == BLK_ZONE_COND_FULL && (dmzap->victim_selection_method == DMZAP_CONST_GREEDY || dmzap->victim_selection_method == DMZAP_CONST_CB)){
               //dmz_dev_debug(dmzap->dev, "Updating constant time lists for zone %u with %d invalid blocks", current_zone->seq, current_zone->nr_invalid_blocks);
 
@@ -402,9 +398,7 @@ int dmzap_validate_blocks(struct dmzap_target *dmzap,
   return 0;
 }
 
-/*
- * Cost benefit value calculation
- */
+/* Calculates cost benefit value of a zone. */
 long long dmzap_calc_cb_value(struct dmzap_target *dmzap,
   const struct dmzap_zone *zone, unsigned long currentTime)
 {
@@ -685,9 +679,7 @@ struct dmzap_zone * dmzap_victim_selection(struct dmzap_target *dmzap)
   return victim;
 }
 
-/*
- * Selecting the zone, that will be freed. FeGC selection
- */
+/* Selects the victim zone based on FeGC algorithm. */
 struct dmzap_zone *dmzap_fegc_victim_selection(struct dmzap_target *dmzap)
 {
 	struct dmzap_zone *victim = NULL;
@@ -758,9 +750,7 @@ struct dmzap_zone *dmzap_fegc_victim_selection(struct dmzap_target *dmzap)
 	return victim;
 }
 
-/*
- * Selecting the zone, that will be freed. FaGC+ selection
- */
+/* Selects the victim zone based on FaGC+ algorithm. */
 struct dmzap_zone *dmzap_fagcplus_victim_selection(struct dmzap_target *dmzap)
 {
 	struct dmzap_zone *victim = NULL;
@@ -780,9 +770,7 @@ struct dmzap_zone *dmzap_fagcplus_victim_selection(struct dmzap_target *dmzap)
 	return victim;
 }
 
-/*
- * Selecting the zone, that will be freed. Constant time greedy victim selection
- */
+/* Selects the victim zone based on constant greedy algorithm. */
 struct dmzap_zone *
 dmzap_const_greedy_victim_selection(struct dmzap_target *dmzap)
 {
@@ -790,6 +778,7 @@ dmzap_const_greedy_victim_selection(struct dmzap_target *dmzap)
 	int i = 0;
 	int max_invalid_blocks = 0;
 
+    /* Iterates on invalid lists and selects the head of the first list that is not empty. */
 	for (i = dmz_sect2blk(dmzap->dev->zone_nr_sectors); i > 0; i--) {
 		if (list_empty(&dmzap->num_invalid_blocks_lists[i])) {
 			continue;
@@ -809,9 +798,7 @@ dmzap_const_greedy_victim_selection(struct dmzap_target *dmzap)
 	return NULL;
 }
 
-/*
- * Selecting the zone, that will be freed. Constant time cost-benefit victim selection
- */
+/* Selects the victim zone based on constant cost benefit algorithm. */
 struct dmzap_zone *dmzap_const_cb_victim_selection(struct dmzap_target *dmzap)
 {
 	struct dmzap_zone *victim = &dmzap->dmzap_zones[0];
@@ -821,6 +808,7 @@ struct dmzap_zone *dmzap_const_cb_victim_selection(struct dmzap_target *dmzap)
 	long long current_benefit;
 	struct dmzap_zone *current_victim = NULL;
 
+    /* Iterates on heads of the lists and compares their cb value. */
 	for (i = dmz_sect2blk(dmzap->dev->zone_nr_sectors)/4; i > 0; i--) {
 		if (list_empty(&dmzap->num_invalid_blocks_lists[i])) {
 			continue;
@@ -830,6 +818,7 @@ struct dmzap_zone *dmzap_const_cb_victim_selection(struct dmzap_target *dmzap)
 					  num_invalid_blocks_link);
 		// BUG_ON(victim->zone->cond != BLK_ZONE_COND_CLOSED &&
 		//        victim->zone->cond != BLK_ZONE_COND_FULL);
+        /* Calculates cost benefit value of this zone and take the maximum cb value. */
 		current_benefit = dmzap_calc_cb_value(dmzap, victim, jiffies);
 		if (current_benefit > max_benefit) {
 			max_benefit = current_benefit;
@@ -840,13 +829,12 @@ struct dmzap_zone *dmzap_const_cb_victim_selection(struct dmzap_target *dmzap)
 	// 	dmzap->dev,
 	// 	"Zone %u has been selected for eviction, all lists are empty!",
 	// 	current_victim ? current_victim->seq : -1);
+    /* Removes the selected victim from its list. */
 	list_del(&current_victim->num_invalid_blocks_link);
 	return current_victim;
 }
 
-/*
- * Copy valid blocks of victim_zone into free zone.
- */
+/* Copies valid pages of the victim to some free zone. */
 void dmzap_copy_valid_data(struct dmzap_target *dmzap,
         struct dmzap_zone *victim_zone)
 {
@@ -862,21 +850,25 @@ void dmzap_copy_valid_data(struct dmzap_target *dmzap,
   __u64 fresh_zone_block_length = 0;
   sector_t zone_block_length = dmz_sect2blk(dmzap->dev->zone_nr_sectors); //TODO ZNS capacity: sector_t zone_block_length = dmz_sect2blk(victim->zone->capacity);
 
-  /* We can only have one outstanding write at a time */
+    /* Acquires the write lock. */
 	while(test_and_set_bit_lock(DMZAP_WR_OUTSTANDING,
 				&dmzap->write_bitmap))
 		io_schedule();
 
   set_bit(DM_KCOPYD_WRITE_SEQ, &flags);
 
+    /* Advances the pointer `chunck_block` on sectors of the victim to transfer them. */
   while (chunk_block < zone_block_length) {
     nr_chunk_blocks = 1;
 
+    /* Current state of the block under pointer of `chunck_block`. */
     invalid_flag = dmzap_get_invalid_flag(dmzap,victim_zone,chunk_block);
 
+    /* If current block is valid, then does the transfer. */
     if(!invalid_flag){
       nr_chunk_blocks = -1;
 
+        /* Gets the number of consecutive valid blocks. */
       for(i = chunk_block + 1; i < zone_block_length; i++){
         invalid_flag = dmzap_get_invalid_flag(dmzap,victim_zone,i);
         if(invalid_flag){
@@ -885,20 +877,28 @@ void dmzap_copy_valid_data(struct dmzap_target *dmzap,
         }
       }
 
+        /* If blocks until the end are all valid, set the number of consecutive valid blocks as such.*/
       if(nr_chunk_blocks == -1){
         nr_chunk_blocks = zone_block_length - chunk_block;
       }
 
+        /* Gets the zone to write the data on. */
       fresh_zone = &dmzap->dmzap_zones[dmzap->dmzap_zone_wp];
 
+        /* Calculates the amount of free blocks the available zone has. */
       fresh_zone_block_length =
         dmz_sect2blk(fresh_zone->zone->start + fresh_zone->zone->len) //TODO ZNS capacity: dmz_sect2blk(fresh_zone->zone->start + fresh_zone->zone->capacity)
         - dmz_sect2blk(fresh_zone->zone->wp);
 
+        /** 
+         * If its empty capacity is less than the number of consecutive valid blocks, limit the transfer
+         * to the size of the available zone.
+         */
       if(fresh_zone_block_length < nr_chunk_blocks){
         nr_chunk_blocks = fresh_zone_block_length;
       }
 
+        /* Calculates the address of block source and destination blocks. */
       read_block = dmz_sect2blk(victim_zone->zone->start) + chunk_block;
       write_block = dmz_sect2blk(fresh_zone->zone->wp);
       if(dmzap->show_debug_msg){
@@ -906,23 +906,26 @@ void dmzap_copy_valid_data(struct dmzap_target *dmzap,
           read_block, write_block);
       }
 
+        /* Sets io_region for blocks to be copied from the victim. */
       src.bdev = dmzap->dev->bdev;
       src.sector = dmz_blk2sect(read_block);
       src.count = dmz_blk2sect(nr_chunk_blocks);
 
+        /* Sets io_region for destination blocks of the available zone. */
       dst.bdev = dmzap->dev->bdev;
       dst.sector = dmz_blk2sect(write_block);
       dst.count = src.count;
 
 
-      /* Copy the valid region */
+        /* Copies the data using kcopyd. */
       set_bit(DMZAP_RECLAIM_KCOPY, &dmzap->reclaim->flags);
       dm_kcopyd_copy(dmzap->reclaim->kc, &src, 1, &dst, flags,
                dmzap_reclaim_kcopy_end, dmzap->reclaim);
 
+        /* Updates the mapping table of transfered blocks. */
 			dmzap_remap_copy(dmzap,	read_block, write_block, nr_chunk_blocks);
 
-      /* Wait for copy to complete */
+        /* Waits for copy operation to complete. */
       wait_on_bit_io(&dmzap->reclaim->flags, DMZAP_RECLAIM_KCOPY,
                TASK_UNINTERRUPTIBLE);
       if (dmzap->reclaim->kc_err){
@@ -930,17 +933,22 @@ void dmzap_copy_valid_data(struct dmzap_target *dmzap,
         return;
       }
 
+        /* Updates GC statistics. */
       dmzap->nr_gc_written_sec += dmz_blk2sect(nr_chunk_blocks);
 
+        /* Updates zone write pointer. */
       dmzap_update_seq_wp(dmzap, dmz_blk2sect(nr_chunk_blocks));
     }
 
+    /* Advances `chunk_block` pointer. */
     chunk_block += nr_chunk_blocks;
   }
 
+    /* Frees the write lock. */
 	clear_bit_unlock(DMZAP_WR_OUTSTANDING, &dmzap->write_bitmap);
 }
 
+/* Resets the victim zone. */
 int dmzap_reset_zone (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 {
   struct dmz_dev *dev = dmzap->dev;
@@ -953,6 +961,7 @@ int dmzap_reset_zone (struct dmzap_target *dmzap, struct dmzap_zone *victim)
   //     cond == BLK_ZONE_COND_READONLY ||
   //     type == BLK_ZONE_TYPE_CONVENTIONAL) return 0;
 
+    /* Sends reset command to the block device. */
   ret = blkdev_zone_mgmt(dev->bdev, REQ_OP_ZONE_RESET,
              victim->zone->start, dev->zone_nr_sectors, GFP_NOIO); //TODO ZNS capacity Not sure about that (maybe the line can stay as it is): victim->zone->start, victim->zone->capacity, GFP_NOIO);
 
@@ -962,6 +971,7 @@ int dmzap_reset_zone (struct dmzap_target *dmzap, struct dmzap_zone *victim)
     return ret;
   }
 
+    /* If the algorithm is fast cost benefit, removes the victim from class 0 list. */
   if(dmzap->victim_selection_method == DMZAP_FAST_CB){
 		//printk("victim class %d for victim %d", victim->reclaim_class, victim->seq);
 		spin_lock_irqsave(&dmzap->debug_lock, flags);
@@ -969,15 +979,14 @@ int dmzap_reset_zone (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 		spin_unlock_irqrestore(&dmzap->debug_lock, flags);
   }
 
+    /* Resets victim's write pointer and condition. */
   victim->zone->wp = victim->zone->start;
   victim->zone->cond = BLK_ZONE_COND_EMPTY;
 
   return 0;
 }
 
-/*
- *
- */
+/* evacuates the victim zone. */
 int dmzap_free_victim (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 {
   int ret = 0;
@@ -985,7 +994,7 @@ int dmzap_free_victim (struct dmzap_target *dmzap, struct dmzap_zone *victim)
   sector_t victim_start_block = dmz_sect2blk(victim->zone->start);
   int free_zones = 0;
 
-  /* We can only have one outstanding write at a time */
+  /* Acquires the write lock. */
   while(test_and_set_bit_lock(DMZAP_WR_OUTSTANDING,
         &dmzap->write_bitmap))
     io_schedule();
@@ -1005,6 +1014,7 @@ int dmzap_free_victim (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 	    victim->zone->len,
 	    free_zones);
 
+    /* Resets the victim zone. */
   ret = dmzap_reset_zone(dmzap, victim);
 
   if (ret) {
@@ -1015,9 +1025,12 @@ int dmzap_free_victim (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 
   victim->zone_age = jiffies;
 
+    /* Marks all blocks of the zone as valid. */
   dmzap_validate_blocks(dmzap, victim_start_block, dmz_sect2blk(dmzap->dev->zone_nr_sectors));
+    /* Clears mapping table of the zone. */
   dmzap_unmap_zone_entries(dmzap, victim);
 	dmzap->reclaim->nr_free_zones++;
+    /* Calculates percentage of free zones and user free zones. */
 	dmzap_calc_p_free_zone(dmzap);
 	trace_printk("+Number of free zones %lu. (total %u)\n", dmzap->reclaim->nr_free_zones, dmzap->nr_internal_zones);
 
@@ -1027,35 +1040,43 @@ out:
   return ret;
 }
 
-/*
- * Reclaim procedure
- */
+/* Actually selects the victim zone based on the chosen algorithem and returns it. */
 static int dmzap_do_reclaim(struct dmzap_target *dmzap)
 {
     struct dmzap_zone *victim = NULL;
+    /* Records the start of the operation to test the performance. */
     unsigned long start = jiffies;
 		int nr_invalid_blocks = 0;
     int ret = 0;
 
     if(dmzap->victim_selection_method == DMZAP_GREEDY){
+        /* If the algorithem is greedy, selects the victim based on greedy algorithem. */
       victim = dmzap_victim_selection(dmzap);
     } else if(dmzap->victim_selection_method == DMZAP_CB){
+        /* If the algorithem is cost benefit, selects the victim based on cost benefit algorithem. */
       victim = dmzap_cb_victim_selection(dmzap);
     } else if(dmzap->victim_selection_method == DMZAP_FAST_CB){
+        /* If the algorithem is fast cost benefit, selects the victim based on fast cost benefit algorithem. */
       victim = dmzap_fast_cb_victim_selection(dmzap);
     } else if (dmzap->victim_selection_method == DMZAP_APPROX_CB) {
+        /* If the algorithem is approx. cost benefit, selects the victim based on approx. cost benefit algorithem. */
 			victim = dmzap_approx_cb_victim_selection(dmzap);
 		} else if (dmzap->victim_selection_method == DMZAP_CONST_GREEDY) {
+        /* If the algorithem is constant greedy, selects the victim based on constant greedy algorithem. */
 		victim = dmzap_const_greedy_victim_selection(dmzap);
     } else if (dmzap->victim_selection_method == DMZAP_CONST_CB) {
+        /* If the algorithem is constant cost benefit, selects the victim based on constant cost benefit algorithem. */
       victim = dmzap_const_cb_victim_selection(dmzap);
     } else if (dmzap->victim_selection_method == DMZAP_FEGC) {
+        /* If the algorithem is FeGC, selects the victim based on FeGC algorithem. */
 		victim = dmzap_fegc_victim_selection(dmzap);
     } else if (dmzap->victim_selection_method == DMZAP_FAGCPLUS) {
+        /* If the algorithem is FaGC+, selects the victim based on FaGC+ algorithem. */
       victim = dmzap_fagcplus_victim_selection(dmzap);
     }
 
     if (victim) {
+        /* Prints the details of the victim selection process. */
 			trace_printk("Victim selected in %d ms, with %d invlaid blocks. Free zones: %lu. vsm: %u, dev_c: %lld\n",
 						jiffies_to_msecs(jiffies - start),
 						victim->nr_invalid_blocks,
@@ -1068,7 +1089,9 @@ static int dmzap_do_reclaim(struct dmzap_target *dmzap)
 					victim->nr_invalid_blocks,
 					dmz_sect2blk(dmzap->dev->zone_nr_sectors) - victim->nr_invalid_blocks);
 			nr_invalid_blocks = victim->nr_invalid_blocks;
+        /* Copies valid pages of the victim zone to another zone. */
 			dmzap_copy_valid_data(dmzap, victim);
+        /* Frees the victim zone. */
       dmzap_free_victim(dmzap, victim);
       //dmzap_reclaim_bio_acc(dmzap); // TODO Maybe leave it out?
 			if(dmzap->show_debug_msg)
@@ -1095,9 +1118,7 @@ static inline bool dmzap_target_idle(struct dmzap_target *dmzap)
   return time_is_before_jiffies(dmzap->reclaim->atime + DMZAP_IDLE_PERIOD);
 }
 
-/*
- * Trigger the reclaim
- */
+/* Returns whether it is appropriate to reclaim a zone now. */
 static bool dmzap_should_reclaim(struct dmzap_target *dmzap)
 {
   if (dmzap_target_idle(dmzap) && dmzap->reclaim->nr_free_zones
@@ -1108,18 +1129,18 @@ static bool dmzap_should_reclaim(struct dmzap_target *dmzap)
 	return dmzap->reclaim->p_free_zones <= dmzap->reclaim_limit;
 }
 
-/*
- * Reclaim work function.
- */
+/* Work function for zone reclaim. */
 static void dmzap_reclaim_work(struct work_struct *work)
 {
 	struct dmzap_reclaim *reclaim = container_of(work, struct dmzap_reclaim, work.work);
     struct dmzap_target *dmzap = reclaim->dmzap;
 	int ret;
 
+    /* If block device is dying, ignore. */
 	if (dmzap_bdev_is_dying(dmzap->dev))
 		return;
 
+    /* Checks whether it should reclaim a zone now. If not, reschedules the work. */
 	if (!dmzap_should_reclaim(dmzap)) {
 		mod_delayed_work(reclaim->wq, &reclaim->work, DMZAP_IDLE_PERIOD);
 		return;
@@ -1149,6 +1170,7 @@ static void dmzap_reclaim_work(struct work_struct *work)
   		      reclaim->p_free_zones, reclaim->nr_free_zones,
             dmzap->nr_internal_zones);
 
+    /* Reclaims a zone. */
   mutex_lock(&dmzap->map.map_lock);
   ret = dmzap_do_reclaim(dmzap);
   mutex_unlock(&dmzap->map.map_lock);
@@ -1159,23 +1181,24 @@ static void dmzap_reclaim_work(struct work_struct *work)
 			return;
 	}
 
+    /* Repeats the reclaim if necessary. */
 	dmzap_schedule_reclaim(dmzap);
 }
 
-/*
- * Initialize reclaim.
- */
+/* Initializes reclaim structures. */
 int dmzap_ctr_reclaim(struct dmzap_target *dmzap)
 {
   struct dmzap_reclaim *reclaim;
   int ret = 0, i = 0;
 
+    /* Allocates memory for reclaim algorithm. */
   dmzap->reclaim = kzalloc(sizeof(struct dmzap_reclaim), GFP_KERNEL);
   if (!dmzap->reclaim)
     return -ENOMEM;
 
   reclaim = dmzap->reclaim;
 
+    /* Allocates cost benefit score for each internal zone. */
   reclaim->cb = kvmalloc_array(dmzap->nr_internal_zones,
 			sizeof(long long), GFP_KERNEL | __GFP_ZERO);
 	if (!reclaim->cb){
@@ -1267,15 +1290,15 @@ err_reclaim:
   return ret;
 }
 
-/*
- * Terminate reclaim.
- */
+/* Terminates reclaim work and deletes its structures. */
 void dmzap_dtr_reclaim(struct dmzap_target *dmzap)
 {
   int i;
 
+    /* If victiom selection algorithm was FeGC, unallocates its heaps. */
   if (dmzap->victim_selection_method == DMZAP_FEGC) {
 		for (i = 0; i <= dmz_sect2blk(dmzap->dev->zone_nr_sectors); i++) {
+            /* Unallocates ith heap. */
 			dmzap_heap_destroy(dmzap->fegc_heaps[i]);
 			kfree(dmzap->fegc_heaps[i]);
 		}
@@ -1287,9 +1310,12 @@ void dmzap_dtr_reclaim(struct dmzap_target *dmzap)
 			      (dmz_sect2blk(dmzap->dev->zone_nr_sectors) + 1));
 	}
 
+    /* If victiom selection algorithm was FaGC+, unallocates its cps and heap. */
 	if (dmzap->victim_selection_method == DMZAP_FAGCPLUS) {
+        /* Frees cps. */
 		vfree(dmzap->fagc_cps);
-		
+
+        /* Unallocates the heap. */
 		dmzap_heap_destroy(&dmzap->fagc_heap);
 		dmz_dev_info(dmzap->dev, "Deallocated %llu cps for FaGC+ reclaim", (dmzap->nr_internal_zones*dmz_sect2blk(dmzap->dev->zone_nr_sectors)));
 	}
