@@ -43,9 +43,7 @@ void dmzap_calc_p_free_zone(struct dmzap_target *dmzap)
 		reclaim->nr_free_user_zones * 100 / dmzap->nr_user_exposed_zones;
 }
 
-/*
- * Calculate the time when zone has to be moved to reclaim_class_0
- */
+/* Calculate the time when zone has to be moved to reclaim_class_0. */
 static void dmzap_calc_shift_time(struct dmzap_target *dmzap,
   struct dmzap_zone *zone, long long cb, unsigned long currentTime)
 {
@@ -75,9 +73,7 @@ static void dmzap_calc_shift_time(struct dmzap_target *dmzap,
   }
 }
 
-/*
- * Comparator for 64 bit integer
- */
+/* Comparator for 64 bit integer. */
 static int compare(const void *lhs, const void *rhs) {
     int lhs_integer = *(const long long *)(lhs);
     int rhs_integer = *(const long long *)(rhs);
@@ -87,9 +83,7 @@ static int compare(const void *lhs, const void *rhs) {
     return 0;
 }
 
-/*
- * Insert a zone in the rbtree for class 1.
- */
+/* Insert a zone in the rbtree for class 1. */
 static void dmzap_rb_insert_zone_class_1(struct dmzap_target *dmzap,
 							struct dmzap_zone *zone)
 {
@@ -120,9 +114,7 @@ static void dmzap_rb_insert_zone_class_1(struct dmzap_target *dmzap,
 	zone->reclaim_class = 1;
 }
 
-/*
- * Remove zone from the class 0 list
- */
+/* Remove zone from the class 0 list. */
 static void dmzap_unassign_zone_from_class_1(struct dmzap_target *dmzap,
   struct dmzap_zone *zone)
 {
@@ -140,9 +132,7 @@ static void dmzap_unassign_zone_from_class_1(struct dmzap_target *dmzap,
 	zone->reclaim_class = -1;
 }
 
-/*
- * Put zone in the class 0 list
- */
+/* Put zone in the class 0 list. */
 static void dmzap_assign_zone_to_class_0(struct dmzap_target *dmzap,
   struct dmzap_zone *zone)
 {
@@ -181,9 +171,7 @@ static void dmzap_unassign_zone_from_class_0(struct dmzap_target *dmzap,
   	dmz_dev_debug(dmzap->dev, "Zone %d unassigned from class 0.\n", zone->seq);
 }
 
-/*
- *  Adjust the threshold_cb, so that class_0 is populated with 0 - dmzap->class_0_cap members
- */
+/* Adjust the threshold_cb, so that class_0 is populated with 0 - dmzap->class_0_cap members. */
 static inline void dmzap_ajust_threshold_cb(struct dmzap_target *dmzap)
 {
   int i = 0;
@@ -246,9 +234,7 @@ static inline void dmzap_ajust_threshold_cb(struct dmzap_target *dmzap)
 	spin_unlock_irqrestore(&dmzap->debug_lock, flags);
 }
 
-/*
- * Invalidate all the blocks in the range [block..block+nr_blocks-1].
- */
+/* Marks all blocks in a range as invalid. */
 int dmzap_invalidate_blocks(struct dmzap_target *dmzap,
   sector_t backing_block,
   unsigned int nr_blocks)
@@ -418,9 +404,7 @@ long long dmzap_calc_cb_value(struct dmzap_target *dmzap,
   return cb;
 }
 
-/*
- * Initially decide to which class the zone is assigned
- */
+/* Initially decide to which class the zone is assigned. */
 void dmzap_assign_zone_to_reclaim_class(struct dmzap_target *dmzap,
   struct dmzap_zone *zone)
 {
@@ -453,9 +437,7 @@ void dmzap_assign_zone_to_reclaim_class(struct dmzap_target *dmzap,
 	spin_unlock_irqrestore(&dmzap->debug_lock, flags);
 }
 
-/*
- * Selecting the zone, that will be freed
- */
+/* Selects the victim zone based on cost benefit algorithm. */
 struct dmzap_zone * dmzap_cb_victim_selection(struct dmzap_target *dmzap)
 {
   struct dmzap_zone *victim = NULL;
@@ -466,6 +448,7 @@ struct dmzap_zone * dmzap_cb_victim_selection(struct dmzap_target *dmzap)
   long long current_cb = 0;
   unsigned long currentTime = jiffies;
 
+    /* Iterates on all internal zones and chooses the one with maximum cost benefit value to be the victim. */
   for(i = 0; i < dmzap->nr_internal_zones; i++){
 		zone = &dmzap->dmzap_zones[i];
 		if(zone->zone->cond == BLK_ZONE_COND_FULL && zone->nr_invalid_blocks != 0){
@@ -485,7 +468,7 @@ struct dmzap_zone * dmzap_cb_victim_selection(struct dmzap_target *dmzap)
   return victim;
 }
 
-
+/* Selects the victim zone based on approximate cost benefit algorithm. */
 struct dmzap_zone * dmzap_approx_cb_victim_selection (struct dmzap_target *dmzap)
 {
 	struct dmzap_zone *victim = NULL;
@@ -560,9 +543,7 @@ struct dmzap_zone * dmzap_approx_cb_victim_selection (struct dmzap_target *dmzap
 }
 
 
-/*
- * Return zone, which has to be shifted from class 1 to 0 based on the shift time
- */
+/* Return zone which has to be shifted from class 1 to 0 based on the shift time. */
 static struct dmzap_zone *dmzap_zone_from_class_1_to_transfer(struct dmzap_target *dmzap,
 					      unsigned long current_time)
 {
@@ -579,9 +560,7 @@ static struct dmzap_zone *dmzap_zone_from_class_1_to_transfer(struct dmzap_targe
 	return NULL;
 }
 
-/*
- * Selecting the zone, that will be freed
- */
+/* Selects the victim zone based on fast cost benefit algorithm. */
 struct dmzap_zone * dmzap_fast_cb_victim_selection(struct dmzap_target *dmzap)
 {
   struct dmzap_zone *victim = NULL; //&dmzap->dmzap_zones[0];
@@ -649,9 +628,7 @@ struct dmzap_zone * dmzap_fast_cb_victim_selection(struct dmzap_target *dmzap)
   return victim;
 }
 
-/*
- * Selecting the zone, that will be freed. Greedy victim selection
- */
+/* Selects the victim zone based on greedy algorithm. */
 struct dmzap_zone * dmzap_victim_selection(struct dmzap_target *dmzap)
 {
   struct dmzap_zone *victim = &dmzap->dmzap_zones[0];
@@ -659,6 +636,8 @@ struct dmzap_zone * dmzap_victim_selection(struct dmzap_target *dmzap)
   int max_invalid_blocks = 0;
   int victim_index = -1;
   int tmp = 0;
+
+  /* Iterates on all internal zones and chooses the one with maximum invalid blocks to be the victim. */
   for (i = 0; i < dmzap->nr_internal_zones; i++) {
     if (dmzap->dmzap_zones[i].zone->cond == BLK_ZONE_COND_CLOSED ||
       dmzap->dmzap_zones[i].zone->cond == BLK_ZONE_COND_FULL) {
@@ -690,6 +669,7 @@ struct dmzap_zone *dmzap_fegc_victim_selection(struct dmzap_target *dmzap)
 	int heap_index = -1;
 	int tmp = 0;
 	u64 jiff = jiffies;
+    /* Iterates on the head of the heaps and compares their cwa to find the victim. */
 	for (i = dmz_sect2blk(dmzap->dev->zone_nr_sectors); i > 0; i--) {
 		if (dmzap->fegc_heaps[i]->size == 0) {
 			continue;
@@ -986,7 +966,7 @@ int dmzap_reset_zone (struct dmzap_target *dmzap, struct dmzap_zone *victim)
   return 0;
 }
 
-/* evacuates the victim zone. */
+/* Evacuates the victim zone. */
 int dmzap_free_victim (struct dmzap_target *dmzap, struct dmzap_zone *victim)
 {
   int ret = 0;
